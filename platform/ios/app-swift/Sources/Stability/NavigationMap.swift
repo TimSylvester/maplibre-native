@@ -60,9 +60,46 @@ class NavigationMap: MLNMapView, MLNMapViewDelegate, NavigationLocationManagerDe
     private var styleGate: Gate?
     private var task: Task<Void, Never>?
     private var stopped = false
+    private var notifyOnMapLoad = false
+    private var pendingInitialCamera: MLNMapCamera?
+    private var pendingInitialZoom: Double?
+    var onDidFinishLoadingMap: (() -> Void)?
+    private let specifiedStyleURL: URL?
 
-    init() {
+    init(cameraSource: MLNMapView? = nil, styleURL: URL? = nil) {
+        specifiedStyleURL = styleURL
         super.init(frame: CGRect())
+        super.styleURL = styleURL ?? config.STYLES.randomElement(using: &config.RANDOM)!!
+
+        if let cameraSource {
+            pendingInitialCamera = cameraSource.camera
+            pendingInitialZoom = cameraSource.zoomLevel
+            applyPendingInitialCamera()
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        if pendingInitialCamera != nil, bounds.width > 0, bounds.height > 0 {
+            applyPendingInitialCamera()
+            pendingInitialCamera = nil
+            pendingInitialZoom = nil
+        }
+    }
+
+    private func applyPendingInitialCamera() {
+        guard let camera = pendingInitialCamera else { return }
+
+        setCenter(camera.centerCoordinate,
+                  zoomLevel: pendingInitialZoom ?? zoomLevel,
+                  direction: 0,
+                  animated: false)
+
+        let pitched = self.camera
+        pitched.pitch = camera.pitch
+        pitched.heading = 0
+        setCamera(pitched, animated: false)
     }
 
     @available(*, unavailable)
@@ -73,7 +110,7 @@ class NavigationMap: MLNMapView, MLNMapViewDelegate, NavigationLocationManagerDe
     @MainActor func load(style: URL) async {
         let gate = Gate()
         styleGate = gate
-
+        notifyOnMapLoad = true
         styleURL = style
 
         await gate.wait()
@@ -88,6 +125,12 @@ class NavigationMap: MLNMapView, MLNMapViewDelegate, NavigationLocationManagerDe
         // a failed style load never reports didFinishLoading
         print("NavigationMap: \(error)")
         styleGate?.open()
+    }
+
+    func mapViewDidFinishLoadingMap(_: MLNMapView) {
+        guard notifyOnMapLoad else { return }
+        notifyOnMapLoad = false
+        onDidFinishLoadingMap?()
     }
 
     func run() {
@@ -109,9 +152,15 @@ class NavigationMap: MLNMapView, MLNMapViewDelegate, NavigationLocationManagerDe
         // and stop holding on to this map view
         styleGate?.open()
 
+        (locationManager as? NavigationLocationManager)?.navigationDelegate = nil
+
         // drops the simulated location manager, stopping its perform-based
         // update chain (which otherwise keeps the map view alive)
+        route?.unload()
         route = nil
+
+        notifyOnMapLoad = false
+        onDidFinishLoadingMap = nil
     }
 
     deinit {
@@ -130,10 +179,10 @@ class NavigationMap: MLNMapView, MLNMapViewDelegate, NavigationLocationManagerDe
 
                 guard let self, !Task.isCancelled else { return }
 
-                // reset existing route
+                route?.unload()
                 route = nil
 
-                await load(style: config.STYLES.randomElement(using: &config.RANDOM)!!)
+                await load(style: specifiedStyleURL ?? config.STYLES.randomElement(using: &config.RANDOM)!!)
                 guard !Task.isCancelled else { return }
 
                 let routeJson = config.getRouteResponseJson()

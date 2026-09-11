@@ -1,0 +1,85 @@
+import SwiftUI
+import UIKit
+
+private final class NavigationMapHandle {
+    weak var map: NavigationMap?
+}
+
+struct MapRecycleTestView: View {
+    let CYCLE_COUNT = 300
+
+    @Environment(\.dismiss) var dismiss
+    @State private var remainingCycles = 300
+    @State private var showTopMap = true
+    @State private var topMapID = UUID()
+    @State private var remountTask: Task<Void, Never>?
+    @State private var bottomMapHandle = NavigationMapHandle()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            let mvt = "https://gc-na.amazon.com/stylesheet/amazon-delivery-us"
+            let mltHereProd = "https://d8j25fm0ain7u.cloudfront.net/amazon-delivery-here-mlt-demo/1.0/stylesheet.json"
+            let mltHereConverge = "https://dr45e484ajson.cloudfront.net/stylesheet/stylesheet.json"
+            let mltHereTess = "https://dr45e484ajson.cloudfront.net/stylesheet/stylesheet_tessellated.json"
+            let styleStr = mvt
+            let style = if #available(iOS 17.0, *) {
+                URL(string: styleStr, encodingInvalidCharacters: false)
+            } else {
+                URL(string: styleStr)
+            }
+            Group {
+                if showTopMap {
+                    NavigationMapView(
+                        onDidFinishLoadingMap: scheduleRemount,
+                        cameraSource: bottomMapHandle.map,
+                        styleURL: style
+                    )
+                    .id(topMapID)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            NavigationMapView(onCreated: { bottomMapHandle.map = $0 }, styleURL: style)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .edgesIgnoringSafeArea(.bottom)
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = true
+            remainingCycles = CYCLE_COUNT
+        }
+        .onDisappear {
+            remountTask?.cancel()
+            remountTask = nil
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .overlay(alignment: .topLeading) {
+            CountdownBadge(remainingCycles: remainingCycles)
+                .padding(16)
+        }
+    }
+
+    private func scheduleRemount() {
+        guard remountTask == nil else { return }
+
+        remountTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(1))
+                showTopMap = false
+                remainingCycles -= 1
+                if remainingCycles <= 0 {
+                    printMemoryUsage()
+                    dismiss()
+                    return
+                }
+                try await Task.sleep(for: .seconds(1))
+                topMapID = UUID()
+                showTopMap = true
+                remountTask = nil
+            } catch {
+                remountTask = nil
+            }
+        }
+    }
+}
